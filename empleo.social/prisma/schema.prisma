@@ -1,0 +1,239 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma" // Retained from user's initial setup
+}
+
+datasource db {
+  provider  = "postgresql" // Supabase uses PostgreSQL
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL") // Retained from user's initial setup
+}
+
+// --------------- ENUMS ---------------
+
+enum UserRole {
+  CANDIDATE
+  RECRUITER
+  ADMIN // For content moderation panel
+}
+
+enum VideoStatus {
+  PENDING // Video uploaded, awaiting processing
+  PROCESSING // Mux is processing the video
+  READY // Video is ready for playback
+  ERRORED // Processing failed
+}
+
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+  INTERNSHIP
+  TEMPORARY
+}
+
+enum JobPostingStatus {
+  DRAFT // Job saved but not visible
+  PUBLISHED // Job is live and visible
+  ARCHIVED // Job is no longer active, kept for records
+  FILLED // Position has been filled
+}
+
+enum ApplicationStatus {
+  SUBMITTED // Candidate showed interest/applied
+  VIEWED // Recruiter viewed the application/video
+  SHORTLISTED // Recruiter is considering the candidate
+  REJECTED // Candidate not selected for this role
+  HIRED // Candidate hired
+}
+
+enum ReportedContentType {
+  VIDEO_ASSET
+  JOB_POSTING
+  USER_PROFILE
+}
+
+enum ReportStatus {
+  PENDING_REVIEW // New report, needs admin attention
+  REVIEWED_ACTION_TAKEN // Admin reviewed and took action (e.g., content removed)
+  REVIEWED_NO_ACTION // Admin reviewed, no action deemed necessary
+  RESOLVED // Report issue is considered closed
+}
+
+// --------------- MODELS ---------------
+
+model User {
+  id    String @id @default(uuid()) // Align with Supabase Auth user ID (auth.users.id)
+  email String @unique
+  name  String?
+  role  UserRole @default(CANDIDATE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  candidateProfile CandidateProfile?
+  recruiterProfile RecruiterProfile?
+
+  uploadedVideos    VideoAsset[] @relation("UploadedBy")
+  jobApplications   Application[] @relation("UserApplications") 
+  postedJobPostings JobPosting[]  @relation("UserJobPostings") 
+
+  reportsMade         Report[] @relation("ReportedBy")
+  reportsReceived     Report[] @relation("ReportedUserContent")
+  reviewsByAdmin      Report[] @relation("ReviewedByAdmin")
+
+  @@index([email])
+  @@index([role])
+}
+
+model CandidateProfile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  headline  String?
+  location  String?
+  skills    String[]
+  resumeUrl String?
+
+  bioVideoId String?     @unique
+  bioVideo   VideoAsset? @relation(name: "CandidateBioVideo", fields: [bioVideoId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  applications Application[] 
+
+  @@index([userId])
+}
+
+model RecruiterProfile {
+  id          String @id @default(cuid())
+  userId      String @unique
+  user        User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  companyName        String
+  companyWebsite     String?
+  companyLogoUrl     String?
+  companyDescription String? @db.Text
+
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  jobPostings JobPosting[] 
+
+  @@index([userId])
+  @@index([companyName])
+}
+
+model VideoAsset {
+  id         String @id @default(cuid())
+  uploaderId String
+  uploader   User   @relation(name: "UploadedBy", fields: [uploaderId], references: [id], onDelete: Cascade)
+
+  muxAssetId    String @unique
+  muxPlaybackId String @unique
+  status        VideoStatus @default(PENDING)
+  duration      Float?
+  aspectRatio   String?
+  title         String?
+  description   String?     @db.Text
+
+  candidateBioProfile CandidateProfile? @relation(name: "CandidateBioVideo")
+
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  reports   Report[]          @relation("ReportedVideoContent")
+
+  @@index([uploaderId])
+  @@index([status])
+}
+
+model JobPosting {
+  id                 String  @id @default(cuid())
+  recruiterProfileId String
+  recruiterProfile   RecruiterProfile @relation(fields: [recruiterProfileId], references: [id], onDelete: Cascade)
+  
+  postingUserId      String 
+  postingUser        User    @relation("UserJobPostings", fields: [postingUserId], references: [id], onDelete: Cascade) 
+
+  title              String
+  description        String @db.Text
+  location           String?
+  employmentType     EmploymentType?
+  skillsRequired     String[]
+  salaryOrRange      String?
+  status             JobPostingStatus @default(DRAFT)
+  publishedAt        DateTime?
+  expiresAt          DateTime?
+
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  applications Application[]
+  reports     Report[]    @relation("ReportedJobContent")
+
+  @@index([recruiterProfileId])
+  @@index([postingUserId]) 
+  @@index([status])
+  @@index([employmentType])
+}
+
+model Application {
+  id                 String   @id @default(cuid())
+  candidateProfileId String
+  candidateProfile   CandidateProfile @relation(fields: [candidateProfileId], references: [id], onDelete: Cascade)
+  
+  applicantId        String 
+  applicant          User     @relation("UserApplications", fields: [applicantId], references: [id], onDelete: Cascade) 
+
+  jobPostingId       String
+  jobPosting         JobPosting @relation(fields: [jobPostingId], references: [id], onDelete: Cascade)
+
+  status             ApplicationStatus @default(SUBMITTED)
+  applicationDate    DateTime          @default(now())
+  coverLetterOrNote  String?           @db.Text
+  recruiterNotes     String?           @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([candidateProfileId, jobPostingId], name: "unique_application_by_profile")
+  @@unique([applicantId, jobPostingId], name: "unique_application_by_user") 
+  @@index([candidateProfileId])
+  @@index([applicantId]) 
+  @@index([jobPostingId])
+  @@index([status])
+}
+
+model Report {
+  id          String   @id @default(cuid())
+  reporterId  String
+  reporter    User     @relation(name: "ReportedBy", fields: [reporterId], references: [id], onDelete: Restrict)
+
+  contentType ReportedContentType
+  reason      String   @db.Text
+
+  reportedVideoId      String?
+  reportedVideo        VideoAsset? @relation(name: "ReportedVideoContent", fields: [reportedVideoId], references: [id], onDelete: Cascade)
+  reportedJobPostingId String?
+  reportedJobPosting   JobPosting? @relation(name: "ReportedJobContent", fields: [reportedJobPostingId], references: [id], onDelete: Cascade)
+  reportedUserId       String?
+  reportedUser         User?       @relation(name: "ReportedUserContent", fields: [reportedUserId], references: [id], onDelete: Cascade)
+
+  status            ReportStatus @default(PENDING_REVIEW)
+  adminNotes        String?      @db.Text
+  reviewedByAdminId String?
+  reviewedByAdmin   User?        @relation(name: "ReviewedByAdmin", fields: [reviewedByAdminId], references: [id], onDelete: SetNull)
+  reviewedAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([reporterId])
+  @@index([contentType])
+  @@index([status])
+  @@index([reportedVideoId])
+  @@index([reportedJobPostingId])
+  @@index([reportedUserId])
+}
